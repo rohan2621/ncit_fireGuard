@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic
+python-multipart
+xgboost
+scikit-learn
+requests
+ultralytics
+opencv-python-headless
+psycopg2-binary
+python-dotenv
+yt-dlp
+yt-dlp

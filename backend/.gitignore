@@ -1,0 +1,13 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+.env
+
+*.pt
+*.pth
+*.h5
+*.keras
+
+*.mp4
