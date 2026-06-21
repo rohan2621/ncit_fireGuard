@@ -2,6 +2,7 @@ export { Map } from './Map'
 export { IncidentFeed } from './IncidentFeed'
 export { IncidentDetailPanel } from './IncidentDetailPanel'
 export { VideoInputPanel } from './VideoInputPanel'
+export { LocationPicker } from './LocationPicker'
 export { AlertSystem } from './AlertSystem'
 export { ModulePanel } from './ModulePanel'
 // New AI Command System components

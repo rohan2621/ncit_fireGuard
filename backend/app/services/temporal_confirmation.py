@@ -1,6 +1,6 @@
 from collections import defaultdict
 
-N_FRAMES_REQUIRED = 3
+N_FRAMES_REQUIRED = 2
 
 
 class TemporalConfirmer:

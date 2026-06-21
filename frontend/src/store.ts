@@ -10,7 +10,7 @@ import {
 } from './types'
 
 export type ModuleTab = 'fire' | 'risk' | 'weather' | 'damage' | 'smoke'
-export type DashboardView = 'command' | 'simulation' | 'timeline' | 'resources' | 'impact' | 'memory' | 'map'
+export type DashboardView = 'command' | 'simulation' | 'timeline' | 'resources' | 'impact' | 'memory' | 'map' | 'video'
 
 // ─── AI Mock Logic ────────────────────────────────────────────────────────────
 function generateAIRecommendations(incident: Incident): AIRecommendation[] {
@@ -18,7 +18,7 @@ function generateAIRecommendations(incident: Incident): AIRecommendation[] {
   const score = incident.risk?.score ?? 0
   const wind = incident.risk?.weather_data?.wind_speed ?? 0
   const humidity = incident.risk?.weather_data?.humidity ?? 50
-
+	
   if (score >= 80) {
     recs.push({ priority: 'CRITICAL', action: 'Immediate evacuation of Zone A and B', reason: 'Risk score exceeds critical threshold', zone: 'Zone A/B' })
     recs.push({ priority: 'CRITICAL', action: 'Deploy all available aerial assets', reason: 'Fire spread rate too high for ground crews alone', zone: 'Active Front' })
@@ -35,11 +35,27 @@ function generateAIRecommendations(incident: Incident): AIRecommendation[] {
 }
 
 function generateResources(incident: Incident): ResourceAllocation[] {
-  const score = incident.risk?.score ?? 0
+  const score = incident.risk?.score ?? 30
+  const windDir = incident.risk?.weather_data?.wind_direction
+  const dirLabel = windDir != null
+    ? ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(windDir / 45) % 8]
+    : null
+
+  // Scale continuously with risk score instead of one threshold jump, so
+  // allocation actually tracks the live score rather than snapping at 70.
+  const intensity = Math.max(0.4, score / 100)
+  const activeTrucks = Math.round(2 + intensity * 3)
+  const activePersonnel = Math.round(10 + intensity * 20)
+  const activeAircraft = score >= 70 ? 2 : score >= 40 ? 1 : 0
+
+  // Name the active front by real wind direction — this is the zone the fire
+  // is actually spreading toward, not an arbitrary fixed label.
+  const activeZoneName = dirLabel ? `Active Front (${dirLabel} — downwind)` : 'Active Front'
+
   return [
-    { zone: 'Zone A (Active Front)', fire_trucks: score > 70 ? 4 : 2, personnel: score > 70 ? 24 : 12, aircraft: score > 70 ? 2 : 1, status: 'DEPLOYED' },
-    { zone: 'Zone B (Flank)', fire_trucks: 2, personnel: 16, aircraft: 1, status: 'STAGING' },
-    { zone: 'Zone C (Buffer)', fire_trucks: 1, personnel: 8, aircraft: 0, status: 'AVAILABLE' },
+    { zone: activeZoneName, fire_trucks: activeTrucks, personnel: activePersonnel, aircraft: activeAircraft, status: 'DEPLOYED' },
+    { zone: 'Flank Zone', fire_trucks: 2, personnel: 16, aircraft: score >= 80 ? 1 : 0, status: score >= 50 ? 'STAGING' : 'AVAILABLE' },
+    { zone: 'Buffer Zone', fire_trucks: 1, personnel: 8, aircraft: 0, status: 'AVAILABLE' },
   ]
 }
 
@@ -62,12 +78,13 @@ function routeMessage(incident: Incident, message: WebSocketMessage): Incident {
         severity: 'critical',
       })
       break
-    case 'risk_update':
-      updated.risk = message.data
-      updated.severity = message.data.score >= 80 ? 'CRITICAL' : message.data.score >= 60 ? 'HIGH' : 'MODERATE'
-      updated.ai_recommendations = generateAIRecommendations({ ...updated, risk: message.data })
-      updated.resources = generateResources({ ...updated, risk: message.data })
-      timeline.push({
+      case 'risk_update':
+        updated.risk = message.data
+        updated.severity = message.data.score >= 80 ? 'CRITICAL' : message.data.score >= 60 ? 'HIGH' : 'MODERATE'
+        updated.ai_recommendations = generateAIRecommendations({ ...updated, risk: message.data })
+        updated.resources = generateResources({ ...updated, risk: message.data })
+        updated.historical_matches = computeHistoricalMatches(message.data.weather_data)
+        timeline.push({
         id: `evt-${Date.now()}`,
         timestamp: new Date().toISOString(),
         type: 'risk_update',
@@ -149,11 +166,29 @@ function routeMessage(incident: Incident, message: WebSocketMessage): Incident {
 }
 
 // ─── Historical Mock Data ─────────────────────────────────────────────────────
-const HISTORICAL_FIRES = [
-  { id: 'HF-001', location: 'Chitwan Forest, Chitwan', date: '2024-03-15', conditions: 'High wind (55 km/h), Low humidity (18%), Dry season', outcome: 'Contained after 72 hrs, 1200 ha burned', similarity_pct: 87 },
-  { id: 'HF-002', location: 'Shivapuri Hills, Kathmandu', date: '2023-04-02', conditions: 'Strong NE wind, Low rainfall, Dense forest', outcome: 'Controlled in 48 hrs, 340 ha burned', similarity_pct: 74 },
-  { id: 'HF-003', location: 'Lamtang Valley, Rasuwa', date: '2022-05-10', conditions: 'Extreme drought, High temperature (38°C)', outcome: 'Major incident, 2800 ha burned, 3 villages evacuated', similarity_pct: 61 },
+// ─── Historical Mock Data ─────────────────────────────────────────────────────
+// Illustrative reference fires — not a verified historical database, but the
+// similarity matching below is real math against real current weather data,
+// not a fixed display number.
+const HISTORICAL_FIRES_BASE: Omit<import('./types').HistoricalFire, 'similarity_pct'>[] = [
+  { id: 'HF-001', location: 'Chitwan Forest, Chitwan', date: '2024-03-15', conditions: 'High wind (55 km/h), Low humidity (18%), Dry season', outcome: 'Contained after 72 hrs, 1200 ha burned', reference_wind_speed: 55, reference_humidity: 18 },
+  { id: 'HF-002', location: 'Shivapuri Hills, Kathmandu', date: '2023-04-02', conditions: 'Strong NE wind (~40 km/h), Low rainfall, Dense forest', outcome: 'Controlled in 48 hrs, 340 ha burned', reference_wind_speed: 40, reference_humidity: 30 },
+  { id: 'HF-003', location: 'Lamtang Valley, Rasuwa', date: '2022-05-10', conditions: 'Extreme drought, Low wind (~25 km/h), High temperature (38°C)', outcome: 'Major incident, 2800 ha burned, 3 villages evacuated', reference_wind_speed: 25, reference_humidity: 15 },
 ]
+
+function computeHistoricalMatches(weather?: { wind_speed: number; humidity: number }) {
+  if (!weather) {
+    return HISTORICAL_FIRES_BASE.map(f => ({ ...f, similarity_pct: 50 }))
+  }
+  return HISTORICAL_FIRES_BASE
+    .map(f => {
+      const windDiff = Math.abs(weather.wind_speed - f.reference_wind_speed) / 60
+      const humidityDiff = Math.abs(weather.humidity - f.reference_humidity) / 100
+      const similarity = Math.round(100 * (1 - (windDiff * 0.6 + humidityDiff * 0.4)))
+      return { ...f, similarity_pct: Math.max(0, Math.min(100, similarity)) }
+    })
+    .sort((a, b) => b.similarity_pct - a.similarity_pct)
+}
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 interface IncidentStore {
@@ -161,6 +196,13 @@ interface IncidentStore {
   selectedIncidentId: string | null
   wsConnected: boolean
   lastAlert: string | null
+
+  satelliteScan: {
+    count: number
+    timestamp: number
+    next_scan_in_seconds: number
+  } | null
+
   activeModule: ModuleTab
   activeDashboardView: DashboardView
   simParams: SimulationParams
@@ -171,6 +213,13 @@ interface IncidentStore {
   selectIncident: (id: string | null) => void
   setWSConnected: (connected: boolean) => void
   setLastAlert: (alert: string | null) => void
+
+  setSatelliteScan: (data: {
+    count: number
+    timestamp: number
+    next_scan_in_seconds: number
+  }) => void
+
   setActiveModule: (module: ModuleTab) => void
   setActiveDashboardView: (view: DashboardView) => void
   setSimParams: (params: Partial<SimulationParams>) => void
@@ -179,6 +228,7 @@ interface IncidentStore {
   getIncidentById: (id: string) => Incident | undefined
   getLatestIncidents: (limit?: number) => Incident[]
   getActiveIncident: () => Incident | null
+  fetchIncidents: () => Promise<void>
 }
 
 const DEFAULT_SIM_PARAMS: SimulationParams = {
@@ -223,6 +273,9 @@ export const useIncidentStore = create<IncidentStore>((set, get) => ({
   selectedIncidentId: null,
   wsConnected: false,
   lastAlert: null,
+
+  satelliteScan: null,
+
   activeModule: 'fire',
   activeDashboardView: 'command',
   simParams: DEFAULT_SIM_PARAMS,
@@ -241,7 +294,7 @@ export const useIncidentStore = create<IncidentStore>((set, get) => ({
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
           timeline: [],
-          historical_matches: HISTORICAL_FIRES,
+          historical_matches: computeHistoricalMatches(),
         }
         const routed = routeMessage(newIncident, message)
         return { incidents: [routed, ...incidents] }
@@ -256,11 +309,26 @@ export const useIncidentStore = create<IncidentStore>((set, get) => ({
   selectIncident: (id) => set({ selectedIncidentId: id }),
   setWSConnected: (connected) => set({ wsConnected: connected }),
   setLastAlert: (alert) => set({ lastAlert: alert }),
+  
+  setSatelliteScan: (data) =>
+    set({
+      satelliteScan: data,
+    }),
+  
   setActiveModule: (module) => set({ activeModule: module }),
-  setActiveDashboardView: (view) => set({ activeDashboardView: view }),
-  setSimParams: (params) => set((s) => ({ simParams: { ...s.simParams, ...params } })),
-
-  runSimulation: (incidentId) => {
+  
+  setActiveDashboardView: (view) =>
+    set({ activeDashboardView: view }),
+  
+  setSimParams: (params) =>
+    set((s) => ({
+      simParams: {
+        ...s.simParams,
+        ...params,
+      },
+    })),
+  
+    runSimulation: (incidentId) => {
     set({ isSimRunning: true })
     setTimeout(() => {
       const { simParams, incidents, selectedIncidentId } = get()
@@ -296,5 +364,51 @@ export const useIncidentStore = create<IncidentStore>((set, get) => ({
     const { incidents, selectedIncidentId } = get()
     if (selectedIncidentId) return incidents.find((i) => i.id === selectedIncidentId) ?? incidents[0] ?? null
     return incidents[0] ?? null
+  },
+
+  fetchIncidents: async () => {
+    try {
+      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+      const res = await fetch(`${apiBase}/incidents`)
+      if (!res.ok) throw new Error(`Failed to fetch incidents: ${res.status}`)
+      const { incidents } = await res.json()
+
+      const mapped: Incident[] = incidents.map((row: any) => {
+        const weather = row.risk?.weather_data
+          ? { ...row.risk.weather_data, wind_direction: row.risk.weather_data.wind_dir }
+          : undefined
+        const risk = row.risk ? { ...row.risk, weather_data: weather } : undefined
+
+        const incidentShell: Incident = {
+          id: row.incident.id,
+          status: row.incident.status === 'confirmed' ? 'ACTIVE' : row.incident.status,
+          severity: risk?.score >= 80 ? 'CRITICAL' : risk?.score >= 60 ? 'HIGH' : 'MODERATE',
+          created_at: row.incident.timestamp,
+          updated_at: row.report?.generated_at ?? row.impact?.created_at ?? risk?.created_at ?? row.incident.timestamp,
+          timeline: [],
+          historical_matches: computeHistoricalMatches(weather),
+          detection: {
+            lat: row.incident.lat,
+            lng: row.incident.lng,
+            confidence: row.incident.confidence,
+            source: row.incident.source,
+            timestamp: row.incident.timestamp,
+          },
+          risk,
+          impact: row.impact ?? undefined,
+          simulation: row.simulation ?? [],
+          report: row.report ?? undefined,
+        }
+
+        incidentShell.ai_recommendations = risk ? generateAIRecommendations(incidentShell) : []
+        incidentShell.resources = risk ? generateResources(incidentShell) : []
+
+        return incidentShell
+      })
+
+      set({ incidents: mapped })
+    } catch (err) {
+      console.error('fetchIncidents failed:', err)
+    }
   },
 }))

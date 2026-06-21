@@ -119,7 +119,8 @@ export const ResourcePanel: React.FC = () => {
         <div className="flex items-start gap-2">
           <CheckCircle2 size={14} className="text-green-400 mt-0.5 flex-shrink-0" />
           <p className="text-xs text-slate-400">
-            Resource allocation is automatically optimized by AI based on fire risk score, spread direction, and zone threat level.
+            Allocation scales with the live risk score, and the active front is named for the real wind direction from the risk model.
+            Fleet totals are an assumed regional baseline for this demo, not a live dispatch feed.
           </p>
         </div>
       </div>

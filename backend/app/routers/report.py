@@ -27,7 +27,7 @@ async def make_report(incident_id: str, db: Session = Depends(get_db)):
     if not (risk and impact and frame_180):
         raise HTTPException(400, "Run /risk, /simulate, /impact first")
 
-    area_ha = impact.trees_lost / 400  # back-derive hectares from trees_lost
+    area_ha = impact.trees_lost / 400
     radius_m = math.sqrt(area_ha * 10000 / math.pi)
 
     content = generate_report(

@@ -13,6 +13,7 @@ import {
   ReportGenerator,
   IncidentFeed,
   ModulePanel,
+  VideoInputPanel,
 } from './components'
 import { useIncidentStore, DashboardView } from './store'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -30,6 +31,7 @@ import {
   FileText,
   Map as MapIcon,
   MapPin,
+  Camera,
 } from 'lucide-react'
 
 interface NavItem {
@@ -41,6 +43,7 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
+  { id: 'video', label: 'Video Input', shortLabel: 'Video', icon: <Camera size={15} />, color: 'text-orange-400' },
   { id: 'command', label: 'AI Commander', shortLabel: 'AI', icon: <Brain size={15} />, color: 'text-purple-400' },
   { id: 'map', label: 'Map View', shortLabel: 'Map', icon: <MapIcon size={15} />, color: 'text-blue-400' },
   { id: 'simulation', label: 'Simulation', shortLabel: 'Sim', icon: <Zap size={15} />, color: 'text-cyan-400' },
@@ -61,6 +64,7 @@ function getSeverityStyle(severity?: string) {
 
 function ViewContent({ view }: { view: DashboardView }) {
   switch (view) {
+    case 'video': return <VideoInputPanel />
     case 'command': return <AICommander />
     case 'simulation': return <SimulationInterface />
     case 'timeline': return <Timeline />

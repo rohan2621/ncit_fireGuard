@@ -1,13 +1,16 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { useIncidentStore } from '../store'
 import { motion } from 'framer-motion'
-import { Flame, TrendingUp } from 'lucide-react'
+import { Flame, TrendingUp, Zap, Loader2 } from 'lucide-react'
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 export const IncidentFeed: React.FC = () => {
   const incidents = useIncidentStore((state) => state.incidents)
   const selectedIncidentId = useIncidentStore((state) => state.selectedIncidentId)
   const selectIncident = useIncidentStore((state) => state.selectIncident)
-
+  const [simulatingIds, setSimulatingIds] = useState<Record<string, boolean>>({})
+  
   const getRiskColor = (score: number) => {
     if (score >= 80) return 'bg-red-500'
     if (score >= 60) return 'bg-orange-500'
@@ -20,6 +23,20 @@ export const IncidentFeed: React.FC = () => {
     if (score >= 60) return 'HIGH'
     if (score >= 40) return 'MEDIUM'
     return 'LOW'
+  }
+
+  const runSimulation = async (e: React.MouseEvent, incidentId: string) => {
+    e.stopPropagation() // don't trigger selectIncident when clicking the button
+    setSimulatingIds((prev) => ({ ...prev, [incidentId]: true }))
+    try {
+      await fetch(`${API_URL}/simulate/${incidentId}`, { method: 'POST' })
+      // Result arrives via the WebSocket (simulation_frame messages) and
+      // updates the store automatically — no need to handle the response here.
+    } catch (err) {
+      console.error('Simulation request failed:', err)
+    } finally {
+      setSimulatingIds((prev) => ({ ...prev, [incidentId]: false }))
+    }
   }
 
   return (
@@ -42,101 +59,122 @@ export const IncidentFeed: React.FC = () => {
           </div>
         ) : (
           <div className="space-y-2 p-3">
-            {incidents.map((incident, idx) => (
-              <motion.div
-                key={incident.id}
-                initial={{ opacity: 0, x: 100 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: idx * 0.05 }}
-                onClick={() => selectIncident(incident.id)}
-                className={`p-3 rounded-lg cursor-pointer transition-all border ${
-                  selectedIncidentId === incident.id
-                    ? 'bg-slate-700 border-fire-orange shadow-lg shadow-fire-orange/20'
-                    : 'bg-slate-800 border-slate-700 hover:bg-slate-700'
-                }`}
-              >
-                <div className="flex items-start gap-3">
-                  {/* Risk Badge */}
-                  {incident.risk && (
-                    <div
-                      className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${getRiskColor(
-                        incident.risk.score
-                      )} text-white font-bold text-xs`}
-                    >
-                      {Math.round(incident.risk.score)}
-                    </div>
-                  )}
+            {incidents.map((incident, idx) => {
+              const hasSimulation = incident.simulation && incident.simulation.length > 0
+              const isSimulating = simulatingIds[incident.id]
 
-                  {/* Content */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <p className="text-sm font-semibold text-slate-100 truncate">
-                        Incident {incident.id.slice(0, 8).toUpperCase()}
-                      </p>
-                      {incident.risk && (
-                        <span
-                          className={`text-xs font-bold px-2 py-0.5 rounded whitespace-nowrap ${
-                            incident.risk.score >= 80
-                              ? 'bg-red-900 text-red-200'
-                              : incident.risk.score >= 60
-                              ? 'bg-orange-900 text-orange-200'
-                              : 'bg-yellow-900 text-yellow-200'
-                          }`}
-                        >
-                          {getRiskLabel(incident.risk.score)}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Location */}
-                    {incident.detection && (
-                      <p className="text-xs text-slate-400 mb-1">
-                        📍 {incident.detection.lat.toFixed(4)},
-                        {incident.detection.lng.toFixed(4)}
-                      </p>
-                    )}
-
-                    {/* Confidence */}
-                    {incident.detection && (
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className="flex-1 bg-slate-700 rounded-full h-1.5">
-                          <div
-                            className="bg-gradient-to-r from-fire-orange to-fire-red h-full rounded-full"
-                            style={{
-                              width: `${incident.detection.confidence * 100}%`,
-                            }}
-                          ></div>
-                        </div>
-                        <span className="text-xs text-slate-400">
-                          {(incident.detection.confidence * 100).toFixed(0)}%
-                        </span>
+              return (
+                <motion.div
+                  key={incident.id}
+                  initial={{ opacity: 0, x: 100 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: idx * 0.05 }}
+                  onClick={() => selectIncident(incident.id)}
+                  className={`p-3 rounded-lg cursor-pointer transition-all border ${
+                    selectedIncidentId === incident.id
+                      ? 'bg-slate-700 border-fire-orange shadow-lg shadow-fire-orange/20'
+                      : 'bg-slate-800 border-slate-700 hover:bg-slate-700'
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    {/* Risk Badge */}
+                    {incident.risk && (
+                      <div
+                        className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${getRiskColor(
+                          incident.risk.score
+                        )} text-white font-bold text-xs`}
+                      >
+                        {Math.round(incident.risk.score)}
                       </div>
                     )}
 
-                    {/* Status Indicators */}
-                    <div className="flex items-center gap-2 text-xs text-slate-400">
-                      {incident.risk && (
-                        <span className="flex items-center gap-1">
-                          <TrendingUp size={12} /> Risk
-                        </span>
-                      )}
-                      {incident.simulation && incident.simulation.length > 0 && (
-                        <span>📡 Simulation</span>
-                      )}
-                      {incident.impact && <span>💔 Impact Data</span>}
-                      {incident.report && <span>📄 Report</span>}
-                    </div>
+                    {/* Content */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <p className="text-sm font-semibold text-slate-100 truncate">
+                          Incident {incident.id.slice(0, 8).toUpperCase()}
+                        </p>
+                        {incident.risk && (
+                          <span
+                            className={`text-xs font-bold px-2 py-0.5 rounded whitespace-nowrap ${
+                              incident.risk.score >= 80
+                                ? 'bg-red-900 text-red-200'
+                                : incident.risk.score >= 60
+                                ? 'bg-orange-900 text-orange-200'
+                                : 'bg-yellow-900 text-yellow-200'
+                            }`}
+                          >
+                            {getRiskLabel(incident.risk.score)}
+                          </span>
+                        )}
+                      </div>
 
-                    {/* Timestamp */}
-                    <p className="text-xs text-slate-500 mt-1">
-                      {formatDistanceToNow(new Date(incident.updated_at), {
-                        addSuffix: true,
-                      })}
-                    </p>
+                      {/* Location */}
+                      {incident.detection && (
+                        <p className="text-xs text-slate-400 mb-1">
+                          📍 {incident.detection.lat.toFixed(4)},
+                          {incident.detection.lng.toFixed(4)}
+                        </p>
+                      )}
+
+                      {/* Confidence */}
+                      {incident.detection && (
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className="flex-1 bg-slate-700 rounded-full h-1.5">
+                            <div
+                              className="bg-gradient-to-r from-fire-orange to-fire-red h-full rounded-full"
+                              style={{
+                                width: `${incident.detection.confidence * 100}%`,
+                              }}
+                            ></div>
+                          </div>
+                          <span className="text-xs text-slate-400">
+                            {(incident.detection.confidence * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Status Indicators */}
+                      <div className="flex items-center gap-2 text-xs text-slate-400 mb-2">
+                        {incident.risk && (
+                          <span className="flex items-center gap-1">
+                            <TrendingUp size={12} /> Risk
+                          </span>
+                        )}
+                        {hasSimulation && <span>📡 Simulation</span>}
+                        {incident.impact && <span>💔 Impact Data</span>}
+                        {incident.report && <span>📄 Report</span>}
+                      </div>
+
+                      {/* Simulate button */}
+                      <button
+                        onClick={(e) => runSimulation(e, incident.id)}
+                        disabled={isSimulating}
+                        className={`w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-semibold transition-colors disabled:opacity-50 ${
+                          hasSimulation
+                            ? 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                            : 'bg-fire-orange text-slate-900 hover:bg-fire-red'
+                        }`}
+                      >
+                        {isSimulating ? (
+                          <Loader2 size={13} className="animate-spin" />
+                        ) : (
+                          <Zap size={13} />
+                        )}
+                        {isSimulating ? 'Simulating...' : hasSimulation ? 'Re-simulate Spread' : 'Simulate Spread'}
+                      </button>
+
+                      {/* Timestamp */}
+                      <p className="text-xs text-slate-500 mt-1">
+                        {formatDistanceToNow(new Date(incident.updated_at), {
+                          addSuffix: true,
+                        })}
+                      </p>
+                    </div>
                   </div>
-                </div>
-              </motion.div>
-            ))}
+                </motion.div>
+              )
+            })}
           </div>
         )}
       </div>

@@ -31,6 +31,12 @@ async def compute_risk(incident_id: str, db: Session = Depends(get_db)):
     db.commit()
 
     await manager.broadcast("risk_update", incident.id, {
-        "score": score, "feature_importance": feature_importance, "weather_data": weather,
-    })
+    "score": score,
+    "feature_importance": feature_importance,
+    "weather_data": {
+        **weather,
+        "temperature": weather["temp"],
+        "wind_direction": weather["wind_dir"],
+	    },	
+	})
     return {"score": score, "feature_importance": feature_importance, "weather_data": weather}

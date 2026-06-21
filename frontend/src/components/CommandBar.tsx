@@ -1,24 +1,77 @@
 import React, { useState, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Terminal, Send, Bot, User, Sparkles } from 'lucide-react'
+import { useIncidentStore } from '../store'
+import { Incident } from '../types'
 
-const NL_RESPONSES: Record<string, string> = {
-  default: "I'm analyzing the current fire incident data. Ask me about risk factors, resource needs, evacuation zones, or what-if scenarios.",
-  village: "🔍 Analyzing threat to nearby villages... Based on current wind direction (NE at 35 km/h) and fire spread rate, villages within 8km NE of the fire perimeter are at HIGH risk within the next 3 hours. Recommend immediate evacuation of Dolakha sector.",
-  wind: "📊 Wind increase simulation: If wind speed increases to 60 km/h, the fire spread rate would increase by ~180%. Predicted area would reach 450 ha within 2 hours, threatening Zone B and C buffers. RECOMMEND: Pre-evacuate and deploy aerial assets immediately.",
-  report: "📋 Generating incident report... Report includes: fire detection timestamp, risk analysis (score: see current panel), spread simulation results, resource deployment status, and impact assessment. Report is being compiled — check the Report tab when complete.",
-  evacuate: "🚨 Evacuation zones analysis: Primary zone (0-3km radius) — IMMEDIATE evacuation required. Secondary zone (3-8km) — Prepare to evacuate. Tertiary zone (8-15km) — Monitor and standby. Estimated population in primary zone: see Impact panel.",
-  resource: "🚒 Current resource status: Based on AI optimization, Zone A (active front) needs 4 trucks + 24 personnel. Zone B (flank) is staging 2 trucks + 16 personnel. Recommend deploying 1 additional air tanker to cut off NE spread vector.",
-}
-
-function getResponse(query: string): string {
+function getResponse(query: string, incident: Incident | null): string {
   const q = query.toLowerCase()
-  if (q.includes('village') || q.includes('community') || q.includes('settlement')) return NL_RESPONSES.village
-  if (q.includes('wind') && (q.includes('increase') || q.includes('what if') || q.includes('stronger'))) return NL_RESPONSES.wind
-  if (q.includes('report') || q.includes('generate') || q.includes('summary')) return NL_RESPONSES.report
-  if (q.includes('evacuate') || q.includes('evacuation') || q.includes('zone')) return NL_RESPONSES.evacuate
-  if (q.includes('resource') || q.includes('truck') || q.includes('personnel') || q.includes('deploy')) return NL_RESPONSES.resource
-  return NL_RESPONSES.default
+
+  if (!incident) {
+    return "No active incident right now. Upload a video, start webcam monitoring, or connect a stream to begin tracking a fire."
+  }
+
+  const risk = incident.risk
+  const impact = incident.impact
+  const detection = incident.detection
+  const resources = incident.resources ?? []
+  const weather = risk?.weather_data
+
+  if (q.includes('village') || q.includes('community') || q.includes('settlement')) {
+    if (!weather) return "Risk model hasn't run for this incident yet — no wind or weather data available to assess threat direction."
+    const dirLabel = ['N','NE','E','SE','S','SW','W','NW'][Math.round((weather.wind_direction ?? 0) / 45) % 8]
+    const pop = impact?.population_affected
+    const structures = impact?.structures_threatened
+    return `🔍 Current wind: ${weather.wind_speed.toFixed(0)} km/h from ${dirLabel}. Fire is spreading in that direction. ` +
+      (pop != null ? `Estimated ${pop.toLocaleString()} people in the affected zone. ` : '') +
+      (structures != null ? `${structures.toLocaleString()} structures threatened. ` : '') +
+      `Risk score: ${risk?.score?.toFixed(0) ?? '—'}/100.`
+  }
+
+  if (q.includes('wind') && (q.includes('increase') || q.includes('what if') || q.includes('stronger'))) {
+    if (!weather) return "No current wind data for this incident yet — run risk assessment first."
+    const currentWind = weather.wind_speed
+    const hypotheticalWind = 60
+    const scaleFactor = hypotheticalWind / Math.max(currentWind, 1)
+    const currentArea = impact?.area_burned_ha
+    const estimate = currentArea != null
+      ? `Current burned area: ${currentArea.toFixed(1)} ha at ${currentWind.toFixed(0)} km/h wind. ` +
+        `At ${hypotheticalWind} km/h, spread rate would scale roughly ${scaleFactor.toFixed(1)}x based on current wind-to-spread ratio — ` +
+        `estimate only, not a re-run of the simulation. Use the Simulation tab to model this precisely.`
+      : `Current wind is ${currentWind.toFixed(0)} km/h. At ${hypotheticalWind} km/h, expect substantially faster spread — ` +
+        `use the Simulation tab with adjusted wind parameters for a precise modeled estimate.`
+    return `📊 ${estimate}`
+  }
+
+  if (q.includes('report') || q.includes('generate') || q.includes('summary')) {
+    if (incident.report?.content) {
+      return "📋 Report already generated for this incident — open the Report tab to view the full content."
+    }
+    return "📋 Report not yet generated for this incident. It's created automatically once risk, simulation, and impact assessment all complete."
+  }
+
+  if (q.includes('evacuate') || q.includes('evacuation') || q.includes('zone')) {
+    if (!detection) return "No detection data yet for this incident."
+    const score = risk?.score ?? 30
+    const radiusKm = (2 + (score / 100) * 8)
+    const pop = impact?.population_affected
+    return `🚨 Evacuation radius at current risk score (${score.toFixed(0)}/100): ~${radiusKm.toFixed(1)} km from ` +
+      `${detection.lat.toFixed(3)}°N, ${detection.lng.toFixed(3)}°E. ` +
+      (pop != null ? `Estimated ${pop.toLocaleString()} people within the affected area. ` : '') +
+      `See the Map tab's evacuation circle for the live boundary.`
+  }
+
+  if (q.includes('resource') || q.includes('truck') || q.includes('personnel') || q.includes('deploy')) {
+    if (resources.length === 0) {
+      return "🚒 Resource allocation hasn't been calculated yet — this populates once risk assessment completes."
+    }
+    const lines = resources.map(r =>
+      `${r.zone}: ${r.fire_trucks} trucks, ${r.personnel} personnel, ${r.aircraft} aircraft (${r.status})`
+    )
+    return `🚒 Current allocation —\n${lines.join('\n')}`
+  }
+
+  return "I can answer questions about risk factors, resource needs, evacuation zones, or wind what-if scenarios for the currently selected incident. Try one of the suggestions below, or ask in your own words."
 }
 
 const SUGGESTIONS = [
@@ -37,11 +90,12 @@ interface Message {
 }
 
 export const CommandBar: React.FC = () => {
+  const activeIncident = useIncidentStore((s) => s.getActiveIncident())
   const [messages, setMessages] = useState<Message[]>([
     {
       id: 'welcome',
       role: 'assistant',
-      content: "🔥 FireGuard AI Commander ready. I have access to all live incident data. Ask me about risk, resources, evacuation, or run what-if scenarios.",
+      content: "🔥 FireGuard Command Interface ready. Ask about risk, resources, evacuation, or wind what-if scenarios for the active incident.",
       timestamp: new Date().toISOString(),
     }
   ])
@@ -56,8 +110,8 @@ export const CommandBar: React.FC = () => {
     setInput('')
     setIsThinking(true)
 
-    await new Promise(r => setTimeout(r, 900 + Math.random() * 600))
-    const response = getResponse(text)
+    await new Promise(r => setTimeout(r, 400 + Math.random() * 300))
+    const response = getResponse(text, activeIncident)
     setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: 'assistant', content: response, timestamp: new Date().toISOString() }])
     setIsThinking(false)
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
@@ -65,24 +119,22 @@ export const CommandBar: React.FC = () => {
 
   return (
     <div className="h-full flex flex-col">
-      {/* Header */}
       <div className="bg-gradient-to-r from-cyan-900/40 to-blue-900/40 border border-cyan-700/50 rounded-xl p-4 mb-4 flex-shrink-0">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-cyan-500/20 rounded-lg border border-cyan-500/30">
             <Terminal size={20} className="text-cyan-300" />
           </div>
           <div>
-            <h2 className="text-sm font-bold text-cyan-200">AI Command Interface</h2>
-            <p className="text-xs text-cyan-400">Natural language incident control</p>
+            <h2 className="text-sm font-bold text-cyan-200">Command Interface</h2>
+            <p className="text-xs text-cyan-400">Real-time incident data, plain-language queries</p>
           </div>
           <div className="ml-auto flex items-center gap-1.5 bg-cyan-900/40 border border-cyan-700/50 px-2 py-1 rounded-full">
             <Sparkles size={10} className="text-cyan-400" />
-            <span className="text-xs text-cyan-300">AI Active</span>
+            <span className="text-xs text-cyan-300">{activeIncident ? 'Live Data' : 'No Incident'}</span>
           </div>
         </div>
       </div>
 
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto space-y-3 mb-3 pr-1">
         <AnimatePresence>
           {messages.map((msg) => (
@@ -97,7 +149,7 @@ export const CommandBar: React.FC = () => {
               }`}>
                 {msg.role === 'user' ? <User size={14} /> : <Bot size={14} className="text-purple-300" />}
               </div>
-              <div className={`max-w-[80%] rounded-xl p-3 text-xs leading-relaxed ${
+              <div className={`max-w-[80%] rounded-xl p-3 text-xs leading-relaxed whitespace-pre-line ${
                 msg.role === 'user'
                   ? 'bg-fire-orange/20 border border-fire-orange/30 text-slate-200'
                   : 'bg-slate-800/80 border border-slate-700 text-slate-300'
@@ -124,7 +176,6 @@ export const CommandBar: React.FC = () => {
         <div ref={bottomRef} />
       </div>
 
-      {/* Suggestions */}
       <div className="flex-shrink-0 mb-3">
         <div className="flex gap-2 overflow-x-auto pb-1">
           {SUGGESTIONS.map((s) => (
@@ -136,14 +187,13 @@ export const CommandBar: React.FC = () => {
         </div>
       </div>
 
-      {/* Input */}
       <div className="flex-shrink-0 flex gap-2">
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && sendMessage(input)}
-          placeholder="Ask the AI commander..."
+          placeholder="Ask about the active incident..."
           className="flex-1 bg-slate-800 border border-slate-600 focus:border-cyan-500/50 rounded-xl px-4 py-2.5 text-xs text-slate-200 placeholder-slate-500 outline-none transition-colors"
         />
         <button

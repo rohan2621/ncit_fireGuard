@@ -11,9 +11,9 @@ export const useWebSocket = () => {
   const reconnectAttempts = useRef(0)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const store = useIncidentStore()
-  const addOrUpdateIncident = store.addOrUpdateIncident
-  const setWSConnected = store.setWSConnected
+  const addOrUpdateIncident = useIncidentStore((s) => s.addOrUpdateIncident)
+  const setWSConnected = useIncidentStore((s) => s.setWSConnected)
+  const setLastAlert = useIncidentStore((s) => s.setLastAlert)
 
   useEffect(() => {
     const connect = () => {
@@ -30,15 +30,22 @@ export const useWebSocket = () => {
           try {
             const message: WebSocketMessage = JSON.parse(event.data)
             console.log('Received message:', message)
-
-            // Route message to store
-            addOrUpdateIncident(message)
-
-            // If it's a detection, trigger alert
+        
+            switch (message.type) {
+              case 'satellite_scan':
+                useIncidentStore
+                  .getState()
+                  .setSatelliteScan(message.data)
+                break
+        
+              default:
+                addOrUpdateIncident(message)
+                break
+            }
+        
             if (message.type === 'detection_new') {
-              store.setLastAlert(message.incident_id)
-              // Auto-clear alert after 5 seconds
-              setTimeout(() => store.setLastAlert(null), 5000)
+              setLastAlert(message.incident_id)
+              setTimeout(() => setLastAlert(null), 5000)
             }
           } catch (error) {
             console.error('Failed to parse WebSocket message:', error)
@@ -54,7 +61,6 @@ export const useWebSocket = () => {
           console.log('WebSocket disconnected')
           setWSConnected(false)
 
-          // Attempt reconnect with exponential backoff
           if (reconnectAttempts.current < MAX_RECONNECT_ATTEMPTS) {
             const delay = RECONNECT_INTERVAL * Math.pow(1.5, reconnectAttempts.current)
             reconnectAttempts.current += 1
@@ -80,7 +86,7 @@ export const useWebSocket = () => {
         wsRef.current.close()
       }
     }
-  }, [addOrUpdateIncident, setWSConnected, store])
+  }, [])
 
   return wsRef
 }
