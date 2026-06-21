@@ -13,11 +13,14 @@ ACTIVE_STREAMS: dict[str, dict] = {}
 router = APIRouter(prefix="/detect", tags=["detect"])
 
 MAX_WATCH_SECONDS = 120
-OPEN_TIMEOUT_SECONDS = 20
-FRAME_INTERVAL = 0.5  # read a frame every 0.5s max — prevents spin loop
+OPEN_TIMEOUT_SECONDS = 20  # max time to wait for VideoCapture to open
 
 
 def _open_capture_with_timeout(direct_url: str, timeout: float):
+    """
+    cv2.VideoCapture() can hang forever if FFMPEG stalls.
+    Run it in a thread with a hard deadline.
+    """
     cap_holder = [None]
     done = threading.Event()
 
@@ -29,6 +32,8 @@ def _open_capture_with_timeout(direct_url: str, timeout: float):
     t.start()
 
     if not done.wait(timeout):
+        # Thread is stuck — nothing we can do to kill it cleanly,
+        # but marking it daemon means it won't block process exit.
         raise TimeoutError(f"VideoCapture open timed out after {timeout}s")
 
     return cap_holder[0]
@@ -53,6 +58,7 @@ def _read_frame_with_timeout(cap: cv2.VideoCapture, timeout: float):
 
 def _resolve_and_open(public_url: str, max_attempts: int = 3):
     for attempt in range(1, max_attempts + 1):
+        # ── Step 1: resolve direct URL ──────────────────────────────────
         try:
             result = subprocess.run(
                 ["yt-dlp", "-f", "best[ext=mp4]/best", "-g", public_url],
@@ -79,6 +85,7 @@ def _resolve_and_open(public_url: str, max_attempts: int = 3):
         print(f"[{public_url}] Resolved URL (attempt {attempt}):")
         print(direct_url)
 
+        # ── Step 2: open capture with hard timeout ───────────────────────
         try:
             cap = _open_capture_with_timeout(direct_url, OPEN_TIMEOUT_SECONDS)
         except TimeoutError:
@@ -114,6 +121,7 @@ async def _watch_stream(
     name: str,
 ):
     tag = f"[{name or public_url} @ {lat},{lng}]"
+
     db = None
     cap = None
 
@@ -122,7 +130,7 @@ async def _watch_stream(
 
         cap, direct_url = await asyncio.wait_for(
             asyncio.to_thread(_resolve_and_open, public_url),
-            timeout=200,
+            timeout=200,  # total budget for all resolve+open attempts
         )
 
         if cap is None:
@@ -136,7 +144,6 @@ async def _watch_stream(
 
         frame_idx = 0
         start_time = time.time()
-        last_frame_time = 0.0
 
         while True:
             # Manual stop check
@@ -145,16 +152,10 @@ async def _watch_stream(
                 break
 
             elapsed = time.time() - start_time
+
             if elapsed > MAX_WATCH_SECONDS:
                 print(f"⏱️ {tag} Max watch time ({MAX_WATCH_SECONDS}s) reached, stopping")
                 break
-
-            # ── Pace frame reads — don't spin ──────────────────────────
-            now = time.time()
-            since_last = now - last_frame_time
-            if since_last < FRAME_INTERVAL:
-                await asyncio.sleep(FRAME_INTERVAL - since_last)
-                continue
 
             remaining = MAX_WATCH_SECONDS - elapsed
             read_timeout = min(15.0, remaining)
@@ -167,13 +168,10 @@ async def _watch_stream(
                 print(f"⏱️ {tag} Frame read timed out, stopping")
                 break
 
-            last_frame_time = time.time()
-
             if not ret:
-                print(f"⚠️ {tag} Stream ended (ret=False) — video finished or connection dropped")
+                print(f"⚠️ {tag} Stream read failed or ended")
                 break
 
-            # Process every 10th frame (every ~5s at 0.5s interval)
             if frame_idx % 10 == 0:
                 ok, buf = cv2.imencode(".jpg", frame)
                 if ok:
